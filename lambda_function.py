@@ -5,12 +5,38 @@ from botocore.exceptions import ClientError
 from datetime import datetime
 import base64
 import uuid
+import re
 
 
 
 # Initialize the SES client
 ses_client = boto3.client('ses', region_name='us-east-2')
 dynamodb_resource = boto3.resource('dynamodb')
+
+def is_domain_verified(domain):
+    """
+    Check if a domain is verified in SES.
+    
+    :param domain: The domain to check (e.g., 'example.com')
+    :return: Boolean indicating if domain is verified
+    """
+    try:
+        response = ses_client.list_verified_email_addresses()
+        verified_domains = [email.split('@')[1] for email in response['VerifiedEmailAddresses']]
+        return domain.lower() in verified_domains
+    except ClientError as e:
+        print(f"Error checking domain verification: {e.response['Error']['Message']}")
+        return False
+
+def extract_domain(email):
+    """
+    Extract domain from email address.
+    
+    :param email: Email address
+    :return: Domain part of email
+    """
+    match = re.search(r'@(.+)$', email)
+    return match.group(1) if match else None
 
 def get_account_email(account_id):
     """
@@ -77,8 +103,18 @@ def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_t
     :param body_text: The plain text version of the email body.
     :param body_html: The HTML version of the email body (optional).
     :param in_reply_to: The Message-ID of the email being replied to (optional).
-    :return: Response from SES or an error message.
+    :return: Tuple of (rfc_message_id, error_message). If successful, error_message will be None.
     """
+    # Check if we're in sandbox mode by attempting to get sending statistics
+    try:
+        ses_client.get_send_statistics()
+    except ClientError as e:
+        if 'AccessDenied' in str(e):
+            print("WARNING: SES account is in sandbox mode. Recipients must be verified.")
+            # Check if recipient domain is verified
+            recipient_domain = extract_domain(recipient)
+            if not is_domain_verified(recipient_domain):
+                return None, f"Recipient domain {recipient_domain} is not verified. Please verify the domain in SES or move to production mode."
 
     msg = MIMEMultipart('alternative')
     # Generate and set a custom Message-ID for threading
@@ -110,12 +146,21 @@ def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_t
                 'Data': msg.as_bytes()
             }
         )
-        ses_mid = response['MessageId']
-        print(f"Email sent! SES Message ID: <{ses_mid}@us-east-2.amazonses.com>")
-        return rfc_message_id  # Return the RFC Message-ID for threading & logging
+        print(f"Email sent! RFC Message ID: {rfc_message_id}")
+        return rfc_message_id, None
     except ClientError as e:
-        print(f"Failed to send email: {e.response['Error']['Message']}")
-        return e.response['Error']['Message']
+        error_message = e.response['Error']['Message']
+        print(f"Failed to send email: {error_message}")
+        
+        # Provide more helpful error messages for common issues
+        if "Email address is not verified" in error_message:
+            return None, "Sender email is not verified in SES. Please verify the sender email or use a verified domain."
+        elif "not authorized to send from" in error_message:
+            return None, "Sender email is not authorized to send from this domain. Please verify the domain in SES."
+        elif "sandbox" in error_message.lower():
+            return None, "SES account is in sandbox mode. Please request production access or verify the recipient email."
+        
+        return None, error_message
 
 def lambda_handler(event, context):
     """
@@ -173,7 +218,16 @@ def lambda_handler(event, context):
         subject = f'Re: {subject}'
 
     # Send the email
-    message_id = send_email(associated_realtor_email, target_email, subject, body_text, body_html, in_reply_to)
+    message_id, error = send_email(associated_realtor_email, target_email, subject, body_text, body_html, in_reply_to)
+    
+    if error:
+        # If there's an error, don't log to DynamoDB and return error
+        return {
+            'statusCode': 500,
+            'body': f'Failed to send email: {error}'
+        }
+    
+    # Only log to DynamoDB if email was sent successfully
     log_email_to_dynamodb(account_id, conversation_id, associated_realtor_email, target_email, account_id, subject, body_text, message_id)
 
     return {
