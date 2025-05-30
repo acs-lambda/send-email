@@ -43,19 +43,22 @@ def get_account_email(account_id):
     Retrieves the email associated with the account from DynamoDB.
     
     :param account_id: The unique identifier of the account.
-    :return: The email address associated with the account.
+    :return: Tuple of (email, signature) associated with the account.
     """
     table = dynamodb_resource.Table('Users')
     try:
         response = table.get_item(Key={'id': account_id})
         if 'Item' in response:
-            return response['Item'].get('responseEmail')  # Assuming 'responseEmail' holds the email
+            return (
+                response['Item'].get('responseEmail'),  # Assuming 'responseEmail' holds the email
+                response['Item'].get('email_signature', '')  # Get signature, default to empty string
+            )
         else:
             print(f"No account found for ID: {account_id}")
-            return None
+            return None, None
     except ClientError as e:
         print(f"Error fetching account email: {e.response['Error']['Message']}")
-        return None
+        return None, None
 
 def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associated_account, subject, body_text, message_id, in_reply_to=''):
     """
@@ -189,8 +192,8 @@ def lambda_handler(event, context):
             'body': 'Missing response_body or account information.'
         }
 
-    # Retrieve recipient email from DynamoDB
-    associated_realtor_email = get_account_email(account_id)
+    # Retrieve recipient email and signature from DynamoDB
+    associated_realtor_email, signature = get_account_email(account_id)
     
     if not associated_realtor_email:
         print("Sender email not found.")
@@ -198,6 +201,10 @@ def lambda_handler(event, context):
             'statusCode': 400,
             'body': 'Sender email not found.'
         }
+
+    # Append signature to email body if it exists
+    if signature:
+        response_body = f"{response_body}\n\n{signature}"
 
     # Email configurations
     body_text = response_body
