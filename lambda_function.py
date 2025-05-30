@@ -152,8 +152,9 @@ def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_t
                 'Data': msg.as_bytes()
             }
         )
-        print(f"Email sent! RFC Message ID: {rfc_message_id}")
-        return rfc_message_id, None
+        ses_message_id = response['MessageId']
+        print(f"Email sent! SES Message ID: {ses_message_id}")
+        return ses_message_id, None
     except ClientError as e:
         error_message = e.response['Error']['Message']
         print(f"Failed to send email: {error_message}")
@@ -221,7 +222,7 @@ def lambda_handler(event, context):
         subject = f'Re: {subject}'
 
     # Send the email
-    rfc_message_id, error = send_email(
+    ses_message_id, error = send_email(
         associated_realtor_email,
         target_email,
         subject,
@@ -247,7 +248,7 @@ def lambda_handler(event, context):
             account_id,
             subject,
             response_body,
-            rfc_message_id,
+            ses_message_id,
             in_reply_to
         )
     except Exception as e:
