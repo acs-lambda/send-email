@@ -12,4 +12,6 @@ jobs:
     uses: acs-lambda/.github/.github/workflows/deploy-lambda.yml@main
     with:
       function-name: Send-Email   # ← Change this to the AWS Lambda Function Name!
-      region: us-east-2                 # optional
+      region: us-east-2                   # optional
+    secrets:
+        GHA_AWS_ROLE_ARN: ${{ secrets.GHA_AWS_ROLE_ARN }}

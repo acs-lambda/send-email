@@ -57,7 +57,7 @@ def get_account_email(account_id):
         print(f"Error fetching account email: {e.response['Error']['Message']}")
         return None
 
-def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associated_account, subject, body_text, message_id):
+def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associated_account, subject, body_text, message_id, in_reply_to=''):
     """
     Logs the sent email details to the Conversations DynamoDB table.
     
@@ -66,6 +66,8 @@ def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associa
     :param receiver: The receiver's email address.
     :param associated_account: The account associated with the email.
     :param body_text: The text content of the email.
+    :param message_id: The RFC Message-ID of the email.
+    :param in_reply_to: The Message-ID of the email being replied to (empty string for first email).
     """
     table = dynamodb_resource.Table('Conversations')
     current_timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -76,6 +78,7 @@ def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associa
                 'conversation_id': conversation_id,
                 'is_first_email': '0',  # Mark as not the first email
                 'response_id': message_id,
+                'in_reply_to': in_reply_to,  # Store the in_reply_to value
                 'timestamp': current_timestamp,
                 'sender': sender,
                 'receiver': receiver,
@@ -176,7 +179,7 @@ def lambda_handler(event, context):
     conversation_id = event.get('conversation_id')
     account_id = event.get('account')
     target_email = event.get('target')
-    in_reply_to = event.get('in_reply_to')
+    in_reply_to = event.get('in_reply_to', '')  # Default to empty string if not provided
     subject = event.get('subject')
 
     if not response_body or not account_id:
@@ -186,21 +189,14 @@ def lambda_handler(event, context):
             'body': 'Missing response_body or account information.'
         }
 
-    if not in_reply_to:
-        print("Missing in_reply_to information.")
-        return {
-            'statusCode': 400,
-            'body': 'Missing in_reply_to information.'
-        }
-
     # Retrieve recipient email from DynamoDB
     associated_realtor_email = get_account_email(account_id)
     
     if not associated_realtor_email:
         print("Sender email not found.")
         return {
-            'statusCode': 404,
-            'body': 'Recipient email not found.'
+            'statusCode': 400,
+            'body': 'Sender email not found.'
         }
 
     # Email configurations
@@ -218,19 +214,43 @@ def lambda_handler(event, context):
         subject = f'Re: {subject}'
 
     # Send the email
-    message_id, error = send_email(associated_realtor_email, target_email, subject, body_text, body_html, in_reply_to)
-    
+    rfc_message_id, error = send_email(
+        associated_realtor_email,
+        target_email,
+        subject,
+        response_body,
+        body_html,
+        in_reply_to
+    )
+
     if error:
-        # If there's an error, don't log to DynamoDB and return error
+        print(f"Failed to send email: {error}")
         return {
             'statusCode': 500,
             'body': f'Failed to send email: {error}'
         }
-    
-    # Only log to DynamoDB if email was sent successfully
-    log_email_to_dynamodb(account_id, conversation_id, associated_realtor_email, target_email, account_id, subject, body_text, message_id)
+
+    # Log the email to DynamoDB
+    try:
+        log_email_to_dynamodb(
+            account_id,
+            conversation_id,
+            associated_realtor_email,
+            target_email,
+            account_id,
+            subject,
+            response_body,
+            rfc_message_id,
+            in_reply_to
+        )
+    except Exception as e:
+        print(f"Failed to log email to DynamoDB: {str(e)}")
+        return {
+            'statusCode': 500,
+            'body': f'Failed to log email to DynamoDB: {str(e)}'
+        }
 
     return {
         'statusCode': 200,
-        'body': 'Email sent successfully.'
+        'body': 'Email sent and logged successfully'
     }
