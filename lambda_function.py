@@ -6,6 +6,7 @@ from datetime import datetime
 import base64
 import uuid
 import re
+from decimal import Decimal
 
 
 
@@ -98,6 +99,30 @@ def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associa
         print(f"Error writing to DynamoDB: {str(e)}")
         raise e
 
+def get_latest_conversation_by_id(conversation_id):
+    """
+    Fetch the latest conversation record for a given conversation_id from DynamoDB.
+    Returns the item with the latest timestamp.
+    """
+    table = dynamodb_resource.Table('Conversations')
+    try:
+        # Query all items with this conversation_id
+        response = table.query(
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('conversation_id').eq(conversation_id)
+        )
+        items = response.get('Items', [])
+        if not items:
+            return None
+        # Sort by timestamp (descending) and return the latest
+        sorted_items = sorted(
+            items,
+            key=lambda x: x.get('timestamp', ''),
+            reverse=True
+        )
+        return sorted_items[0]
+    except Exception as e:
+        print(f"Error fetching conversation by id: {str(e)}")
+        return None
 
 def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_to=None):
     """
@@ -186,6 +211,23 @@ def lambda_handler(event, context):
     in_reply_to = event.get('in_reply_to', '')  # Default to empty string if not provided
     subject = event.get('subject')
 
+    # If minimal payload, fetch missing info from DynamoDB
+    if (not account_id or not target_email or not subject) and conversation_id:
+        latest_conv = get_latest_conversation_by_id(conversation_id)
+        if latest_conv:
+            if not account_id:
+                account_id = latest_conv.get('associated_account')
+            if not target_email:
+                # Use receiver if this is an outbound, sender if inbound
+                if latest_conv.get('type') == 'outbound-email':
+                    target_email = latest_conv.get('receiver')
+                else:
+                    target_email = latest_conv.get('sender')
+            if not subject:
+                subject = latest_conv.get('subject')
+            if not in_reply_to:
+                in_reply_to = latest_conv.get('response_id', '')
+
     if not response_body or not account_id:
         print("Missing response_body or account information.")
         return {
@@ -218,7 +260,7 @@ def lambda_handler(event, context):
     </html>
     """
 
-    if not subject.lower().startswith('re:'):
+    if subject and not subject.lower().startswith('re:'):
         subject = f'Re: {subject}'
 
     # Send the email
