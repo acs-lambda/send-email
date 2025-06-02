@@ -249,9 +249,10 @@ def lambda_handler(event, context):
     # Get "busy" attribute from the thread
     table = dynamodb_resource.Table('Threads')
     response = table.get_item(Key={'conversation_id': conversation_id})
+    print(response)
     if 'Item' in response:
-        logger.info(f"Thread {conversation_id} found, busy: {response['Item'].get('busy', 'true')}")
-        busy = response['Item'].get('busy', 'true') == 'true'
+        logger.info(f"Thread {conversation_id} found, busy: {response['Item'].get('busy', True)}")
+        busy = response['Item'].get('busy', True) == True
     else:
         logger.warning("Thread not found, defaulting busy to True")
         busy = True
@@ -267,7 +268,7 @@ def lambda_handler(event, context):
     table.update_item(
         Key={'conversation_id': conversation_id},
         UpdateExpression='SET busy = :busy',
-        ExpressionAttributeValues={':busy': 'false'}
+        ExpressionAttributeValues={':busy': False}
     )
 
 
