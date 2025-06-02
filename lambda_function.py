@@ -7,6 +7,12 @@ import base64
 import uuid
 import re
 from decimal import Decimal
+import sys
+import os
+
+# Add the parent directory to sys.path to import from process-sqs-queued-emails
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from process_sqs_queued_emails.db import update_thread_email_sending_status, get_thread_email_sending_status
 
 
 
@@ -197,110 +203,99 @@ def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_t
 def lambda_handler(event, context):
     """
     Lambda handler that triggers email sending based on the scheduler input.
-    
-    :param event: The event payload from EventBridge Scheduler.
-    :param context: The runtime information of the Lambda function.
     """
-    print("Received Event:", event)
-    
-    # Extract details from the event
-    response_body = event.get('response_body')
-    conversation_id = event.get('conversation_id')
-    account_id = event.get('account')
-    target_email = event.get('target')
-    in_reply_to = event.get('in_reply_to', '')  # Default to empty string if not provided
-    subject = event.get('subject')
-
-    # If minimal payload, fetch missing info from DynamoDB
-    if (not account_id or not target_email or not subject) and conversation_id:
-        latest_conv = get_latest_conversation_by_id(conversation_id)
-        if latest_conv:
-            if not account_id:
-                account_id = latest_conv.get('associated_account')
-            if not target_email:
-                # Use receiver if this is an outbound, sender if inbound
-                if latest_conv.get('type') == 'outbound-email':
-                    target_email = latest_conv.get('receiver')
-                else:
-                    target_email = latest_conv.get('sender')
-            if not subject:
-                subject = latest_conv.get('subject')
-            if not in_reply_to:
-                in_reply_to = latest_conv.get('response_id', '')
-
-    if not response_body or not account_id:
-        print("Missing response_body or account information.")
-        return {
-            'statusCode': 400,
-            'body': 'Missing response_body or account information.'
-        }
-
-    # Retrieve recipient email and signature from DynamoDB
-    associated_realtor_email, signature = get_account_email(account_id)
-    
-    if not associated_realtor_email:
-        print("Sender email not found.")
-        return {
-            'statusCode': 400,
-            'body': 'Sender email not found.'
-        }
-
-    # Append signature to email body if it exists
-    if signature:
-        response_body = f"{response_body}\n\n{signature}"
-
-    # Email configurations
-    body_text = response_body
-    body_html = f"""
-    <html>
-    <head></head>
-    <body>
-      <p>{response_body.replace('\n', '<br>')}</p>
-    </body>
-    </html>
-    """
-
-    if subject and not subject.lower().startswith('re:'):
-        subject = f'Re: {subject}'
-
-    # Send the email
-    ses_message_id, error = send_email(
-        associated_realtor_email,
-        target_email,
-        subject,
-        response_body,
-        body_html,
-        in_reply_to
-    )
-
-    if error:
-        print(f"Failed to send email: {error}")
-        return {
-            'statusCode': 500,
-            'body': f'Failed to send email: {error}'
-        }
-
-    # Log the email to DynamoDB
     try:
-        log_email_to_dynamodb(
-            account_id,
-            conversation_id,
-            associated_realtor_email,
-            target_email,
-            account_id,
-            subject,
-            response_body,
-            ses_message_id,
-            in_reply_to
-        )
+        # Extract required fields from the event
+        conversation_id = event.get('conversation_id')
+        if not conversation_id:
+            return {
+                'statusCode': 400,
+                'body': 'Missing required field: conversation_id'
+            }
+
+        # Check if an email is already being sent for this conversation
+        current_status = get_thread_email_sending_status(conversation_id)
+        if current_status is None:
+            return {
+                'statusCode': 500,
+                'body': 'Error checking email sending status'
+            }
+        if current_status:
+            return {
+                'statusCode': 409,
+                'body': 'An email is already being sent for this conversation'
+            }
+
+        # Set the sending status to true
+        if not update_thread_email_sending_status(conversation_id, True):
+            return {
+                'statusCode': 500,
+                'body': 'Error updating email sending status'
+            }
+
+        try:
+            # Extract other required fields
+            account_id = event.get('account_id')
+            recipient = event.get('recipient')
+            subject = event.get('subject')
+            body_text = event.get('body_text')
+            body_html = event.get('body_html')
+            in_reply_to = event.get('in_reply_to')
+
+            if not all([account_id, recipient, subject, body_text]):
+                raise ValueError("Missing required fields: account_id, recipient, subject, or body_text")
+
+            # Get sender email and signature
+            sender_email, signature = get_account_email(account_id)
+            if not sender_email:
+                raise ValueError(f"Could not find email for account {account_id}")
+
+            # Get the latest conversation to determine if this is a reply
+            latest_conversation = get_latest_conversation_by_id(conversation_id)
+            if not latest_conversation:
+                raise ValueError(f"Could not find conversation {conversation_id}")
+
+            # Send the email
+            message_id, error = send_email(
+                sender=sender_email,
+                recipient=recipient,
+                subject=subject,
+                body_text=body_text,
+                body_html=body_html,
+                in_reply_to=in_reply_to
+            )
+
+            if error:
+                raise Exception(f"Failed to send email: {error}")
+
+            # Log the email to DynamoDB
+            log_email_to_dynamodb(
+                account_id=account_id,
+                conversation_id=conversation_id,
+                sender=sender_email,
+                receiver=recipient,
+                associated_account=account_id,
+                subject=subject,
+                body_text=body_text,
+                message_id=message_id,
+                in_reply_to=in_reply_to
+            )
+
+            return {
+                'statusCode': 200,
+                'body': {
+                    'message': 'Email sent successfully',
+                    'message_id': message_id
+                }
+            }
+
+        finally:
+            # Always set the sending status back to false, even if there was an error
+            update_thread_email_sending_status(conversation_id, False)
+
     except Exception as e:
-        print(f"Failed to log email to DynamoDB: {str(e)}")
+        print(f"Error in lambda_handler: {str(e)}")
         return {
             'statusCode': 500,
-            'body': f'Failed to log email to DynamoDB: {str(e)}'
+            'body': str(e)
         }
-
-    return {
-        'statusCode': 200,
-        'body': 'Email sent and logged successfully'
-    }
