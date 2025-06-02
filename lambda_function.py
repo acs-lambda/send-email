@@ -250,6 +250,7 @@ def lambda_handler(event, context):
     table = dynamodb_resource.Table('Threads')
     response = table.get_item(Key={'conversation_id': conversation_id})
     if 'Item' in response:
+        logger.info(f"Thread {conversation_id} found, busy: {response['Item'].get('busy', 'true')}")
         busy = response['Item'].get('busy', 'true') == 'true'
     else:
         logger.warning("Thread not found, defaulting busy to True")
