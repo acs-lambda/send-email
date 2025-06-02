@@ -7,18 +7,49 @@ import base64
 import uuid
 import re
 from decimal import Decimal
-import sys
-import os
+import logging
+from db_utils import update_thread_email_sending_status, get_thread_email_sending_status
 
-# Add the parent directory to sys.path to import from process-sqs-queued-emails
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from process_sqs_queued_emails.db import update_thread_email_sending_status, get_thread_email_sending_status
-
-
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 # Initialize the SES client
 ses_client = boto3.client('ses', region_name='us-east-2')
 dynamodb_resource = boto3.resource('dynamodb')
+
+def update_thread_email_sending_status(conversation_id: str, is_sending: bool) -> bool:
+    """Update thread email sending status using direct DynamoDB access."""
+    try:
+        threads_table = dynamodb_resource.Table('Threads')
+        threads_table.update_item(
+            Key={'conversation_id': conversation_id},
+            UpdateExpression='SET #sending = :sending',
+            ExpressionAttributeNames={'#sending': 'is_sending_email'},
+            ExpressionAttributeValues={':sending': str(is_sending).lower()}
+        )
+        logger.info(f"Successfully updated email sending status for conversation {conversation_id} to {is_sending}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread email sending status: {str(e)}")
+        return False
+
+def get_thread_email_sending_status(conversation_id: str) -> bool:
+    """Get the current email sending status for a thread."""
+    try:
+        threads_table = dynamodb_resource.Table('Threads')
+        response = threads_table.get_item(
+            Key={'conversation_id': conversation_id},
+            ProjectionExpression='is_sending_email'
+        )
+        
+        if 'Item' in response:
+            status = response['Item'].get('is_sending_email', 'false')
+            return status.lower() == 'true'
+        return False  # Default to False if not set
+    except Exception as e:
+        logger.error(f"Error getting thread email sending status: {str(e)}")
+        return False
 
 def is_domain_verified(domain):
     """
