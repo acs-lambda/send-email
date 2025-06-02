@@ -245,10 +245,10 @@ def lambda_handler(event, context):
                 })
             }
 
-        # Check email sending status
+        # Check if we should send an email (status is true)
         logger.info(f"Checking email sending status for conversation {conversation_id}")
-        current_status = get_thread_email_sending_status(conversation_id)
-        if current_status is None:
+        should_send = get_thread_email_sending_status(conversation_id)
+        if should_send is None:
             logger.error(f"Failed to get email sending status for conversation {conversation_id}")
             return {
                 'statusCode': 500,
@@ -258,25 +258,13 @@ def lambda_handler(event, context):
                 })
             }
             
-        if current_status:
-            logger.warning(f"Email already being sent for conversation {conversation_id}")
+        if not should_send:
+            logger.warning(f"Email sending not requested for conversation {conversation_id}")
             return {
-                'statusCode': 409,
+                'statusCode': 200,
                 'body': json.dumps({
-                    'error': 'Email already being sent for this conversation',
-                    'success': False
-                })
-            }
-
-        # Update sending status
-        logger.info(f"Setting email sending status to True for conversation {conversation_id}")
-        if not update_thread_email_sending_status(conversation_id, True):
-            logger.error(f"Failed to update email sending status for conversation {conversation_id}")
-            return {
-                'statusCode': 500,
-                'body': json.dumps({
-                    'error': 'Failed to update email sending status',
-                    'success': False
+                    'message': 'No email sending requested',
+                    'success': True
                 })
             }
 
@@ -358,8 +346,8 @@ def lambda_handler(event, context):
                 })
             }
         finally:
-            # Reset sending status
-            logger.info(f"Resetting email sending status for conversation {conversation_id}")
+            # Set status to false after sending (or failing to send)
+            logger.info(f"Setting email sending status to False for conversation {conversation_id}")
             update_thread_email_sending_status(conversation_id, False)
 
     except Exception as e:
