@@ -7,8 +7,9 @@ import base64
 import uuid
 import re
 from decimal import Decimal
+import logging
 
-
+logger = logging.getLogger()
 
 # Initialize the SES client
 ses_client = boto3.client('ses', region_name='us-east-2')
@@ -244,6 +245,30 @@ def lambda_handler(event, context):
             'statusCode': 400,
             'body': 'Sender email not found.'
         }
+        
+    # Get "busy" attribute from the thread
+    table = dynamodb_resource.Table('Threads')
+    response = table.get_item(Key={'conversation_id': conversation_id})
+    if 'Item' in response:
+        busy = response['Item'].get('busy', 'true') == 'true'
+    else:
+        logger.warning("Thread not found, defaulting busy to True")
+        busy = True
+    
+    if not busy:
+        logger.warning(f"Thread {conversation_id} is not busy, skipping email send")
+        return {
+            'statusCode': 199,
+            'body': 'Thread is busy, skipping email send'
+        }
+    
+    # Update the thread's attribute 'busy' to false
+    table.update_item(
+        Key={'conversation_id': conversation_id},
+        UpdateExpression='SET busy = :busy',
+        ExpressionAttributeValues={':busy': 'false'}
+    )
+
 
     # Append signature to email body if it exists
     if signature:
