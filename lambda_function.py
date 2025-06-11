@@ -62,7 +62,7 @@ def get_account_email(account_id):
         print(f"Error fetching account email: {e.response['Error']['Message']}")
         return None, None
 
-def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associated_account, subject, body_text, message_id, in_reply_to=''):
+def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associated_account, subject, body_text, message_id, in_reply_to='', llm_email_type=None):
     """
     Logs the sent email details to the Conversations DynamoDB table.
     
@@ -73,28 +73,33 @@ def log_email_to_dynamodb(account_id, conversation_id, sender, receiver, associa
     :param body_text: The text content of the email.
     :param message_id: The RFC Message-ID of the email.
     :param in_reply_to: The Message-ID of the email being replied to (empty string for first email).
+    :param llm_email_type: The type of LLM-generated email (if applicable).
     """
     table = dynamodb_resource.Table('Conversations')
     current_timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        table.put_item(
-            Item={
-                'conversation_id': conversation_id,
-                'is_first_email': '0',  # Mark as not the first email
-                'response_id': message_id,
-                'in_reply_to': in_reply_to,  # Store the in_reply_to value
-                'timestamp': current_timestamp,
-                'sender': sender,
-                'receiver': receiver,
-                'associated_account': account_id,
-                'subject': subject,
-                'body': body_text,
-                's3_location': '',
-                'type': "outbound-email",
-                'ev_score': ''
-            }
-        )
+        item = {
+            'conversation_id': conversation_id,
+            'is_first_email': '0',  # Mark as not the first email
+            'response_id': message_id,
+            'in_reply_to': in_reply_to,  # Store the in_reply_to value
+            'timestamp': current_timestamp,
+            'sender': sender,
+            'receiver': receiver,
+            'associated_account': account_id,
+            'subject': subject,
+            'body': body_text,
+            's3_location': '',
+            'type': "outbound-email",
+            'ev_score': ''
+        }
+        
+        # Add llm_email_type if provided
+        if llm_email_type:
+            item['llm_email_type'] = llm_email_type
+            
+        table.put_item(Item=item)
         print(f"Successfully logged email to DynamoDB for conversation {conversation_id}")
     except Exception as e:
         print(f"Error writing to DynamoDB: {str(e)}")
@@ -211,6 +216,7 @@ def lambda_handler(event, context):
     target_email = event.get('target')
     in_reply_to = event.get('in_reply_to', '')  # Default to empty string if not provided
     subject = event.get('subject')
+    llm_email_type = event.get('llm_email_type')  # Get llm_email_type from event
 
     # If minimal payload, fetch missing info from DynamoDB
     if (not account_id or not target_email or not subject) and conversation_id:
@@ -228,6 +234,8 @@ def lambda_handler(event, context):
                 subject = latest_conv.get('subject')
             if not in_reply_to:
                 in_reply_to = latest_conv.get('response_id', '')
+            if not llm_email_type:  # Get llm_email_type from latest conversation if not in event
+                llm_email_type = latest_conv.get('llm_email_type')
 
     if not response_body or not account_id:
         print("Missing response_body or account information.")
@@ -318,7 +326,8 @@ def lambda_handler(event, context):
             subject,
             response_body,
             ses_message_id,
-            in_reply_to
+            in_reply_to,
+            llm_email_type  # Pass llm_email_type to log_email_to_dynamodb
         )
     except Exception as e:
         print(f"Failed to log email to DynamoDB: {str(e)}")
