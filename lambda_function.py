@@ -299,10 +299,13 @@ def check_and_update_ai_rate_limit(account_id):
             
             table.update_item(
                 Key={'id': item['id']},
-                UpdateExpression='SET invocations = :inv, ttl = :ttl',
+                UpdateExpression='SET invocations = :inv, #ttl = :ttl',
                 ExpressionAttributeValues={
                     ':inv': current_invocations,
                     ':ttl': ttl_time
+                },
+                ExpressionAttributeNames={
+                    '#ttl': 'ttl'
                 }
             )
             
