@@ -248,11 +248,8 @@ def check_and_update_rate_limit(account_id):
             
             return current_invocations, current_invocations > rate_limit, None
         else:
-            # Create new record
-            new_id = str(uuid.uuid4())
             table.put_item(
                 Item={
-                    'id': new_id,
                     'associated_account': account_id,
                     'invocations': 1,
                     'ttl': ttl_time
