@@ -2,12 +2,13 @@ import boto3
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from botocore.exceptions import ClientError
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import uuid
 import re
 from decimal import Decimal
 import logging
+import time
 
 logger = logging.getLogger()
 
@@ -200,6 +201,126 @@ def send_email(sender, recipient, subject, body_text, body_html=None, in_reply_t
         
         return None, error_message
 
+def check_and_update_rate_limit(account_id):
+    """
+    Checks and updates the rate limit for an account in the RL_AWS table.
+    Returns the current invocation count and whether the rate limit is exceeded.
+    
+    :param account_id: The account ID to check rate limit for
+    :return: Tuple of (invocations, is_rate_limited, error_message)
+    """
+    table = dynamodb_resource.Table('RL_AWS')
+    users_table = dynamodb_resource.Table('Users')
+    
+    try:
+        # Get the rate limit from Users table
+        user_response = users_table.get_item(Key={'id': account_id})
+        if 'Item' not in user_response:
+            return 0, False, "Account not found"
+            
+        rate_limit = user_response['Item'].get('rl_aws', 0)
+        
+        # Get current invocation count
+        response = table.query(
+            IndexName='associated_account-index',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('associated_account').eq(account_id)
+        )
+        
+        current_time = int(time.time() * 1000)  # Current time in milliseconds
+        ttl_time = current_time + (60 * 1000)  # 1 minute from now in milliseconds
+        
+        if response['Items']:
+            # Update existing record
+            item = response['Items'][0]
+            current_invocations = item.get('invocations', 0) + 1
+            
+            table.update_item(
+                Key={'id': item['id']},
+                UpdateExpression='SET invocations = :inv, ttl = :ttl',
+                ExpressionAttributeValues={
+                    ':inv': current_invocations,
+                    ':ttl': ttl_time
+                }
+            )
+            
+            return current_invocations, current_invocations > rate_limit, None
+        else:
+            # Create new record
+            new_id = str(uuid.uuid4())
+            table.put_item(
+                Item={
+                    'id': new_id,
+                    'associated_account': account_id,
+                    'invocations': 1,
+                    'ttl': ttl_time
+                }
+            )
+            return 1, 1 > rate_limit, None
+            
+    except Exception as e:
+        logger.error(f"Error in rate limiting: {str(e)}")
+        return 0, False, str(e)
+
+def check_and_update_ai_rate_limit(account_id):
+    """
+    Checks and updates the rate limit for an account in the RL_AI table.
+    Returns the current invocation count and whether the rate limit is exceeded.
+    
+    :param account_id: The account ID to check rate limit for
+    :return: Tuple of (invocations, is_rate_limited, error_message)
+    """
+    table = dynamodb_resource.Table('RL_AI')
+    users_table = dynamodb_resource.Table('Users')
+    
+    try:
+        # Get the rate limit from Users table
+        user_response = users_table.get_item(Key={'id': account_id})
+        if 'Item' not in user_response:
+            return 0, False, "Account not found"
+            
+        rate_limit = user_response['Item'].get('rl_ai', 0)
+        
+        # Get current invocation count
+        response = table.query(
+            IndexName='associated_account-index',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('associated_account').eq(account_id)
+        )
+        
+        current_time = int(time.time() * 1000)  # Current time in milliseconds
+        ttl_time = current_time + (60 * 1000)  # 1 minute from now in milliseconds
+        
+        if response['Items']:
+            # Update existing record
+            item = response['Items'][0]
+            current_invocations = item.get('invocations', 0) + 1
+            
+            table.update_item(
+                Key={'id': item['id']},
+                UpdateExpression='SET invocations = :inv, ttl = :ttl',
+                ExpressionAttributeValues={
+                    ':inv': current_invocations,
+                    ':ttl': ttl_time
+                }
+            )
+            
+            return current_invocations, current_invocations > rate_limit, None
+        else:
+            # Create new record
+            new_id = str(uuid.uuid4())
+            table.put_item(
+                Item={
+                    'id': new_id,
+                    'associated_account': account_id,
+                    'invocations': 1,
+                    'ttl': ttl_time
+                }
+            )
+            return 1, 1 > rate_limit, None
+            
+    except Exception as e:
+        logger.error(f"Error in AI rate limiting: {str(e)}")
+        return 0, False, str(e)
+
 def lambda_handler(event, context):
     """
     Lambda handler that triggers email sending based on the scheduler input.
@@ -243,6 +364,39 @@ def lambda_handler(event, context):
             'statusCode': 400,
             'body': 'Missing response_body or account information.'
         }
+        
+    # Check AWS rate limit
+    invocations, is_rate_limited, error = check_and_update_rate_limit(account_id)
+    if error:
+        logger.error(f"AWS Rate limit check error: {error}")
+        return {
+            'statusCode': 500,
+            'body': f'Error checking AWS rate limit: {error}'
+        }
+        
+    if is_rate_limited:
+        logger.warning(f"AWS Rate limit exceeded for account {account_id}. Current invocations: {invocations}")
+        return {
+            'statusCode': 429,
+            'body': f'AWS Rate limit exceeded. Current invocations: {invocations}'
+        }
+
+    # Check AI rate limit if this is an AI-generated email
+    if llm_email_type:
+        ai_invocations, is_ai_rate_limited, ai_error = check_and_update_ai_rate_limit(account_id)
+        if ai_error:
+            logger.error(f"AI Rate limit check error: {ai_error}")
+            return {
+                'statusCode': 500,
+                'body': f'Error checking AI rate limit: {ai_error}'
+            }
+            
+        if is_ai_rate_limited:
+            logger.warning(f"AI Rate limit exceeded for account {account_id}. Current invocations: {ai_invocations}")
+            return {
+                'statusCode': 429,
+                'body': f'AI Rate limit exceeded. Current invocations: {ai_invocations}'
+            }
 
     # Retrieve recipient email and signature from DynamoDB
     associated_realtor_email, signature = get_account_email(account_id)
