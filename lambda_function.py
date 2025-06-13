@@ -235,11 +235,14 @@ def check_and_update_rate_limit(account_id):
             current_invocations = item.get('invocations', 0) + 1
             
             table.update_item(
-                Key={'id': item['id']},
-                UpdateExpression='SET invocations = :inv, ttl = :ttl',
+                Key={'associated_account': account_id},
+                UpdateExpression='SET invocations = :inv, #ttl = :ttl',
                 ExpressionAttributeValues={
                     ':inv': current_invocations,
                     ':ttl': ttl_time
+                },
+                ExpressionAttributeNames={
+                    '#ttl': 'ttl'
                 }
             )
             
