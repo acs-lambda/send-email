@@ -226,8 +226,8 @@ def check_and_update_rate_limit(account_id):
             KeyConditionExpression=boto3.dynamodb.conditions.Key('associated_account').eq(account_id)
         )
         
-        current_time = int(time.time() * 1000)  # Current time in milliseconds
-        ttl_time = current_time + (60 * 1000)  # 1 minute from now in milliseconds
+        current_time = int(time.time())  # Current time in seconds
+        ttl_time = current_time + 60  # 1 minute from now
         
         if response['Items']:
             # Update existing record
@@ -289,8 +289,8 @@ def check_and_update_ai_rate_limit(account_id):
             KeyConditionExpression=boto3.dynamodb.conditions.Key('associated_account').eq(account_id)
         )
         
-        current_time = int(time.time() * 1000)  # Current time in milliseconds
-        ttl_time = current_time + (60 * 1000)  # 1 minute from now in milliseconds
+        current_time = int(time.time())  # Current time in seconds
+        ttl_time = current_time + 60  # 1 minute from now
         
         if response['Items']:
             # Update existing record
