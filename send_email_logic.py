@@ -76,7 +76,6 @@ def process_and_send_email(event):
     try:
         parsed_event = invoke_lambda('ParseEvent', {
             'event': event,
-            'session': session_id,
             'required_fields': ['response_body', 'conversation_id', 'account', 'target', 'subject']
         })
         
