@@ -89,3 +89,15 @@ def authorize(user_id, session_id):
              raise AuthorizationError(body.get('message', 'Unauthorized'))
     except LambdaError as e:
         raise AuthorizationError(e.message) from e 
+
+def db_select(table_name, index_name, key_name, key_value, account_id, session_id):
+    payload = {
+        'table_name': table_name,
+        'index_name': index_name,
+        'key_name': key_name,
+        'key_value': key_value,
+        'account_id': account_id,
+        'session_id': session_id
+    }
+    response = invoke_lambda('DBSelect', {'body': json.dumps(payload)})
+    return json.loads(response.get('body', '[]')) 

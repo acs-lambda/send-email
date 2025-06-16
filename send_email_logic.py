@@ -8,23 +8,21 @@ from datetime import datetime
 import json
 
 from config import logger, AUTH_BP
-from utils import LambdaError, invoke_lambda, authorize
+from utils import LambdaError, invoke_lambda, authorize, db_select
 
 ses_client = boto3.client('ses', region_name='us-east-2')
 dynamodb = boto3.resource('dynamodb')
 
 def get_account_details(account_id, session_id):
     try:
-        user_details = invoke_lambda('DBSelect', {
-            'body': {
-                'table_name': 'Users',
-                'index_name': 'id-index',
-                'key_name': 'id',
-                'key_value': account_id,
-                'account_id': account_id,
-                'session': session_id,
-            }
-        })
+        user_details = db_select(
+            table_name='Users',
+            index_name='id-index',
+            key_name='id',
+            key_value=account_id,
+            account_id=account_id,
+            session_id=session_id
+        )
         if not user_details:
             raise LambdaError(404, "Account not found.")
         logger.info(f"User details: {user_details}")
