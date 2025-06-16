@@ -27,6 +27,7 @@ def get_account_details(account_id, session_id):
         })
         if not user_details:
             raise LambdaError(404, "Account not found.")
+        logger.info(f"User details: {user_details}")
         
         return user_details[0].get('responseEmail'), user_details[0].get('email_signature', '')
     except Exception as e:
