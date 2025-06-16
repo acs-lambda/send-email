@@ -328,7 +328,7 @@ def check_and_update_ai_rate_limit(account_id):
 def lambda_handler(event, context):
     try:
         # Assuming EventBridge scheduler passes the payload directly
-        result = process_and_send_email(event, AUTH_BP)
+        result = process_and_send_email(event)
         return create_response(200, result)
 
     except LambdaError as e:

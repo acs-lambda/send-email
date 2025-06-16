@@ -6,8 +6,8 @@ import uuid
 import re
 from datetime import datetime
 
-from config import logger
-from utils import LambdaError, invoke_lambda
+from config import logger, AUTH_BP
+from utils import LambdaError, invoke_lambda, authorize
 
 ses_client = boto3.client('ses', region_name='us-east-2')
 dynamodb = boto3.resource('dynamodb')
@@ -71,25 +71,42 @@ def log_email(account_id, conversation_id, sender, receiver, subject, body_text,
     except ClientError as e:
         raise LambdaError(500, f"Failed to log email: {e.response['Error']['Message']}")
 
-def process_and_send_email(event, auth_bp):
-    # Extract details from the event
-    response_body = event.get('response_body')
-    conversation_id = event.get('conversation_id')
-    account_id = event.get('account')
-    target_email = event.get('target')
-    in_reply_to = event.get('in_reply_to', '')
-    subject = event.get('subject')
-    llm_email_type = event.get('llm_email_type')
+def process_and_send_email(event):
+    # Parse the event using ParseEvent lambda function
+    try:
+        parsed_event = invoke_lambda('ParseEvent', {
+            'event': event,
+            'session': session_id,
+            'required_fields': ['response_body', 'conversation_id', 'account', 'target', 'subject']
+        })
+        
+        if not parsed_event.get('success'):
+            raise LambdaError(400, parsed_event.get('error', 'Failed to parse event'))
+            
+        # Extract details from the parsed event
+        response_body = parsed_event['data'].get('response_body')
+        conversation_id = parsed_event['data'].get('conversation_id')
+        account_id = parsed_event['data'].get('account') or parsed_event['data'].get('account_id')
+        target_email = parsed_event['data'].get('target')
+        in_reply_to = parsed_event['data'].get('in_reply_to', '')
+        subject = parsed_event['data'].get('subject')
+        llm_email_type = parsed_event['data'].get('llm_email_type')
+        session_id = parsed_event['data'].get('session_id') or parsed_event['data'].get('session')
+        
+        if session_id != AUTH_BP:
+            authorize(account_id, session_id)
+        
+    except Exception as e:
+        logger.error(f"Failed to parse event: {e}")
+        raise LambdaError(400, f"Invalid event format: {str(e)}")
 
     if not all([response_body, conversation_id, account_id, target_email, subject]):
         raise LambdaError(400, "Missing required fields in the event payload.")
-        
+    
     # Rate limiting
-    invoke_lambda('RateLimitAWS', {'client_id': account_id, 'session': auth_bp})
-    if llm_email_type:
-        invoke_lambda('RateLimitAI', {'client_id': account_id, 'session': auth_bp})
+    invoke_lambda('RateLimitAWS', {'client_id': account_id, 'session': session_id})
 
-    sender_email, signature = get_account_details(account_id, auth_bp)
+    sender_email, signature = get_account_details(account_id, session_id)
     if not sender_email:
         raise LambdaError(404, "Sender email not found for the account.")
 
