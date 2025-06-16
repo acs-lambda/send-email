@@ -9,8 +9,9 @@ import re
 from decimal import Decimal
 import logging
 import time
-
-logger = logging.getLogger()
+from config import logger, AUTH_BP
+from utils import create_response, LambdaError
+from send_email_logic import process_and_send_email
 
 # Initialize the SES client
 ses_client = boto3.client('ses', region_name='us-east-2')
@@ -325,175 +326,14 @@ def check_and_update_ai_rate_limit(account_id):
         return 0, False, str(e)
 
 def lambda_handler(event, context):
-    """
-    Lambda handler that triggers email sending based on the scheduler input.
-    
-    :param event: The event payload from EventBridge Scheduler.
-    :param context: The runtime information of the Lambda function.
-    """
-    print("Received Event:", event)
-    
-    # Extract details from the event
-    response_body = event.get('response_body')
-    conversation_id = event.get('conversation_id')
-    account_id = event.get('account')
-    target_email = event.get('target')
-    in_reply_to = event.get('in_reply_to', '')  # Default to empty string if not provided
-    subject = event.get('subject')
-    llm_email_type = event.get('llm_email_type')  # Get llm_email_type from event
-
-    # If minimal payload, fetch missing info from DynamoDB
-    if (not account_id or not target_email or not subject) and conversation_id:
-        latest_conv = get_latest_conversation_by_id(conversation_id)
-        if latest_conv:
-            if not account_id:
-                account_id = latest_conv.get('associated_account')
-            if not target_email:
-                # Use receiver if this is an outbound, sender if inbound
-                if latest_conv.get('type') == 'outbound-email':
-                    target_email = latest_conv.get('receiver')
-                else:
-                    target_email = latest_conv.get('sender')
-            if not subject:
-                subject = latest_conv.get('subject')
-            if not in_reply_to:
-                in_reply_to = latest_conv.get('response_id', '')
-            if not llm_email_type:  # Get llm_email_type from latest conversation if not in event
-                llm_email_type = latest_conv.get('llm_email_type')
-
-    if not response_body or not account_id:
-        print("Missing response_body or account information.")
-        return {
-            'statusCode': 400,
-            'body': 'Missing response_body or account information.'
-        }
-        
-    # Check AWS rate limit
-    invocations, is_rate_limited, error = check_and_update_rate_limit(account_id)
-    if error:
-        logger.error(f"AWS Rate limit check error: {error}")
-        return {
-            'statusCode': 500,
-            'body': f'Error checking AWS rate limit: {error}'
-        }
-        
-    if is_rate_limited:
-        logger.warning(f"AWS Rate limit exceeded for account {account_id}. Current invocations: {invocations}")
-        return {
-            'statusCode': 429,
-            'body': f'AWS Rate limit exceeded. Current invocations: {invocations}'
-        }
-
-    # Check AI rate limit if this is an AI-generated email
-    if llm_email_type:
-        ai_invocations, is_ai_rate_limited, ai_error = check_and_update_ai_rate_limit(account_id)
-        if ai_error:
-            logger.error(f"AI Rate limit check error: {ai_error}")
-            return {
-                'statusCode': 500,
-                'body': f'Error checking AI rate limit: {ai_error}'
-            }
-            
-        if is_ai_rate_limited:
-            logger.warning(f"AI Rate limit exceeded for account {account_id}. Current invocations: {ai_invocations}")
-            return {
-                'statusCode': 429,
-                'body': f'AI Rate limit exceeded. Current invocations: {ai_invocations}'
-            }
-
-    # Retrieve recipient email and signature from DynamoDB
-    associated_realtor_email, signature = get_account_email(account_id)
-    
-    if not associated_realtor_email:
-        print("Sender email not found.")
-        return {
-            'statusCode': 400,
-            'body': 'Sender email not found.'
-        }
-        
-    # Get "busy" attribute from the thread
-    table = dynamodb_resource.Table('Threads')
-    response = table.get_item(Key={'conversation_id': conversation_id})
-    print(response)
-    if 'Item' in response:
-        logger.info(f"Thread {conversation_id} found, busy: {response['Item'].get('busy', True)}")
-        busy = response['Item'].get('busy', True) == True
-    else:
-        logger.warning("Thread not found, defaulting busy to True")
-        busy = True
-    
-    if not busy:
-        logger.warning(f"Thread {conversation_id} is not busy, skipping email send")
-        return {
-            'statusCode': 199,
-            'body': 'Thread is busy, skipping email send'
-        }
-    
-    # Update the thread's attribute 'busy' to false
-    table.update_item(
-        Key={'conversation_id': conversation_id},
-        UpdateExpression='SET busy = :busy',
-        ExpressionAttributeValues={':busy': False}
-    )
-
-
-    # Append signature to email body if it exists
-    if signature:
-        response_body = f"{response_body}\n\n{signature}"
-
-    # Email configurations
-    body_text = response_body
-    body_html = f"""
-    <html>
-    <head></head>
-    <body>
-      <p>{response_body.replace('\n', '<br>')}</p>
-    </body>
-    </html>
-    """
-
-    if subject and not subject.lower().startswith('re:'):
-        subject = f'Re: {subject}'
-
-    # Send the email
-    ses_message_id, error = send_email(
-        associated_realtor_email,
-        target_email,
-        subject,
-        response_body,
-        body_html,
-        in_reply_to
-    )
-
-    if error:
-        print(f"Failed to send email: {error}")
-        return {
-            'statusCode': 500,
-            'body': f'Failed to send email: {error}'
-        }
-
-    # Log the email to DynamoDB
     try:
-        log_email_to_dynamodb(
-            account_id,
-            conversation_id,
-            associated_realtor_email,
-            target_email,
-            account_id,
-            subject,
-            response_body,
-            ses_message_id,
-            in_reply_to,
-            llm_email_type  # Pass llm_email_type to log_email_to_dynamodb
-        )
-    except Exception as e:
-        print(f"Failed to log email to DynamoDB: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': f'Failed to log email to DynamoDB: {str(e)}'
-        }
+        # Assuming EventBridge scheduler passes the payload directly
+        result = process_and_send_email(event, AUTH_BP)
+        return create_response(200, result)
 
-    return {
-        'statusCode': 200,
-        'body': 'Email sent and logged successfully'
-    }
+    except LambdaError as e:
+        logger.error(f"Error processing send-email request: {e.message}")
+        return create_response(e.status_code, {"error": e.message})
+    except Exception as e:
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
+        return create_response(500, {"error": "An internal server error occurred."})
