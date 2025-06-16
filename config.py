@@ -11,4 +11,9 @@ AWS_REGION = os.environ.get("AWS_REGION")
 
 if not AWS_REGION:
     logger.error("AWS_REGION environment variable not set.")
-    raise ValueError("AWS_REGION is a required environment variable.") 
+    raise ValueError("AWS_REGION is a required environment variable.")
+
+# Authentication bypass key for admin operations
+AUTH_BP = os.environ.get("AUTH_BP", "")
+if not AUTH_BP:
+    logger.warning("AUTH_BP environment variable not set. Admin bypass functionality will be disabled.") 
