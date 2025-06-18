@@ -74,6 +74,7 @@ def log_email(account_id, conversation_id, sender, receiver, subject, body_text,
 def process_and_send_email(event):
     # Parse the event using ParseEvent lambda function
     try:
+        print("Event going to parse event: ", event)
         parsed_event = invoke_lambda('ParseEvent', event)
         parsed_data = json.loads(parsed_event.get('body', '{}'))
         
@@ -89,6 +90,7 @@ def process_and_send_email(event):
         subject = parsed_data.get('subject')
         llm_email_type = parsed_data.get('llm_email_type')
         session_id = parsed_data.get('session_id') or parsed_data.get('session')
+        
         
         # Helper to get most recent item by timestamp
         def get_most_recent_item(items):
