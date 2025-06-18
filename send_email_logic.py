@@ -90,6 +90,40 @@ def process_and_send_email(event):
         llm_email_type = parsed_data.get('llm_email_type')
         session_id = parsed_data.get('session_id') or parsed_data.get('session')
         
+        # Helper to get most recent item by timestamp
+        def get_most_recent_item(items):
+            if isinstance(items, list):
+                items = sorted(items, key=lambda x: x.get('timestamp', ''), reverse=True)
+                return items[0] if items else None
+            return items
+
+        # Fetch missing fields from Threads or Conversations table if not present
+        if not target_email or not subject or not in_reply_to:
+            threads_table = dynamodb.Table('Threads')
+            thread_resp = threads_table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('conversation_id').eq(conversation_id)
+            ) if hasattr(threads_table, 'query') else {'Items': []}
+            thread_items = thread_resp.get('Items', [])
+            thread_item = get_most_recent_item(thread_items) if thread_items else None
+            if thread_item:
+                if not target_email:
+                    target_email = thread_item.get('source')
+            # Optionally, fetch from Conversations table as a fallback
+            if not subject and account_id:
+                conversations_table = dynamodb.Table('Conversations')
+                convo_resp = conversations_table.query(
+                    KeyConditionExpression=boto3.dynamodb.conditions.Key('conversation_id').eq(conversation_id)
+                ) if hasattr(conversations_table, 'query') else {'Items': []}
+                convo_items = convo_resp.get('Items', [])
+                convo_item = get_most_recent_item(convo_items) if convo_items else None
+                if convo_item:
+                    if not subject:
+                        subject = convo_item.get('subject')
+                        if convo_item.get('is_first_email') == '1':
+                            subject = f"Re: {subject}"
+                    if not in_reply_to:
+                        in_reply_to = convo_item.get('response_id')
+
         if not all([response_body, conversation_id, account_id, target_email, subject]):
             raise LambdaError(400, "Missing required fields in the event payload.")
             
